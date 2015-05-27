@@ -9,12 +9,13 @@ disqus_shortname: dickinsons
 
 owner:
   name: Jonathan Dickinson
+  avatar: avatar.jpg
   bio: "Software Developer."
   twitter: jcdickinson
   github: jcdickinson
 
-production_url : http://jcdickinson.github.io
-url: //jcdickinson.github.io
+production_url : http://dickinsons.co.za
+url: //dickinsons.co.za
 
 timezone:    Africa/Johannesburg
 future:      true
