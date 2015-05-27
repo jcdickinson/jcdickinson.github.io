@@ -4,14 +4,25 @@ exclude: [".rvmrc", ".rbenv-version", "README.md", "Rakefile", "changelog.md"]
 highlighter: pygments
 
 title : Jonathan C Dickinson
-tagline: Site Tagline
-author :
-  name : Jonathan C Dickinson
-  email : jonathan@dickinsons.co.za
-  github : jcdickinson
-  twitter : jcdickinson
+description:
+disqus_shortname: dickinsons
+
+owner:
+  name: Jonathan Dickinson
+  bio: "Software Developer."
+  twitter: jcdickinson
+  github: jcdickinson
 
 production_url : http://jcdickinson.github.io
+url: //jcdickinson.github.io
+
+timezone:    Africa/Johannesburg
+future:      true
+pygments:    true
+markdown:    kramdown
+
+# Amount of posts to show on home page
+paginate: 5
 
 JB :
   version : 0.3.0
