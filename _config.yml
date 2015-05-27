@@ -14,8 +14,8 @@ owner:
   twitter: jcdickinson
   github: jcdickinson
 
-production_url : http://dickinsons.co.za
-url: //dickinsons.co.za
+production_url : http://blog.dickinsons.co.za
+url: //blog.dickinsons.co.za
 
 timezone:    Africa/Johannesburg
 future:      true
