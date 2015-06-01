@@ -5,6 +5,7 @@ category : tips
 tagline: "Doing Sockets Correctly"
 tags : [tips, csharp, sockets]
 ---
+
 Writing a socket server in .Net is one of the most rewarding things you can do in .Net. Unfortunately at the same time there is a lot of pre-requisite knowledge
 – and the knowledge isn't easy to find online (in fact it is very easy to examples and tutorials that are blatantly wrong).
 
@@ -31,41 +32,39 @@ as easy as implementing your server using the [Begin/End async pattern.][1] Usin
 
 This sets up an async loop; there is a shorter form of this loop (designed for DRY error handling) – which looks like this:
 
-```c#
-private Socket _socket;
-private ArraySegment<byte> _buffer;
-public void StartReceive()
-{
-    ReceiveAsyncLoop(null);
-}
-
-// Note that this method is not guaranteed (in fact
-// unlikely) to remain on a single thread across
-// async invocations.
-private void ReceiveAsyncLoop(IAsyncResult result)
-{
-    try
+    private Socket _socket;
+    private ArraySegment<byte> _buffer;
+    public void StartReceive()
     {
-        if (result != null)
+        ReceiveAsyncLoop(null);
+    }
+
+    // Note that this method is not guaranteed (in fact
+    // unlikely) to remain on a single thread across
+    // async invocations.
+    private void ReceiveAsyncLoop(IAsyncResult result)
+    {
+        try
         {
-            int numberOfBytesRead = _socket.EndReceive(result);
-            if(numberOfBytesRead == 0)
+            if (result != null)
             {
-                OnDisconnected(null); // 'null' being the exception. The client disconnected normally in this case.
-                return;
-            }
+                int numberOfBytesRead = _socket.EndReceive(result);
+                if(numberOfBytesRead == 0)
+                {
+                    OnDisconnected(null); // 'null' being the exception. The client disconnected normally in this case.
+                    return;
+                }
 
-            var newSegment = new ArraySegment<byte>(_buffer.Array, _buffer.Offset, numberOfBytesRead);
-            OnDataReceived(newSegment);
+                var newSegment = new ArraySegment<byte>(_buffer.Array, _buffer.Offset, numberOfBytesRead);
+                OnDataReceived(newSegment);
+            }
+            _socket.BeginReceive(_buffer.Array, _buffer.Offset, _buffer.Count, SocketFlags.None, ReceiveAsyncLoop, null);
         }
-        _socket.BeginReceive(_buffer.Array, _buffer.Offset, _buffer.Count, SocketFlags.None, ReceiveAsyncLoop, null);
+        catch (Exception ex)
+        {
+            // Socket error handling here.
+        }
     }
-    catch (Exception ex)
-    {
-        // Socket error handling here.
-    }
-}
-```
 
 Note that you should use the async pattern for everything: `Accept`, `Receive`, `Send`, `Connect`. As a side-note – using `BeginSend` with a null callback is
 fine (fire and forget); but it will play havoc with the socket performance counters for your process. You may also want to set [UseOnlyOverlappedIO][2] to true.
@@ -92,140 +91,138 @@ large enough space to allocate an object). Remember that an `OutOfMemoryExceptio
 The way to get around this is to pre-allocate large blocks of memory for buffers. The way to get around this is to pre-allocate large blocks of memory for
 buffers. `ArraySegment` is a good way to get handles on ‘sub-arrays'. Here is an effective buffer pool to get you started:
 
-```c#
-/// <summary>
-/// Represents a buffer pool.
-/// </summary>
-public class BufferPool
-{
-    private readonly int _segmentsPerChunk;
-    private readonly int _segmentSize;
-    private readonly ConcurrentStack<ArraySegment<byte>> _buffers;
-
     /// <summary>
-    /// Gets the default instance of the buffer pool.
+    /// Represents a buffer pool.
     /// </summary>
-    public static readonly BufferPool Instance = new BufferPool(
-        64,
-        4096, /* Page size on Windows NT */
-        64
-        );
-
-    /// <summary>
-    /// Gets the segment size of the buffer pool.
-    /// </summary>
-    public int SegmentSize
+    public class BufferPool
     {
-        get
-        {
-            return _segmentSize;
-        }
-    }
+        private readonly int _segmentsPerChunk;
+        private readonly int _segmentSize;
+        private readonly ConcurrentStack<ArraySegment<byte>> _buffers;
 
-    /// <summary>
-    /// Gets the amount of segments per chunk.
-    /// </summary>
-    public int SegmentsPerChunk
-    {
-        get
-        {
-            return _segmentsPerChunk;
-        }
-    }
+        /// <summary>
+        /// Gets the default instance of the buffer pool.
+        /// </summary>
+        public static readonly BufferPool Instance = new BufferPool(
+            64,
+            4096, /* Page size on Windows NT */
+            64
+            );
 
-    /// <summary>
-    /// Creates a new chunk, makes buffers available.
-    /// </summary>
-    private void CreateNewChunk()
-    {
-        var val = _segmentsPerChunk * _segmentSize;
-
-        byte[] bytes = new byte[val];
-        for (int i = 0; i < _segmentsPerChunk; i++)
+        /// <summary>
+        /// Gets the segment size of the buffer pool.
+        /// </summary>
+        public int SegmentSize
         {
-            ArraySegment<byte> chunk = new
-                ArraySegment<byte>(bytes, i * _segmentSize, _segmentSize);
-            _buffers.Push(chunk);
-        }
-    }
-
-    /// <summary>
-    /// Creates a new chunk, makes buffers available.
-    /// </summary>
-    private void CompleteChunk(byte[] bytes)
-    {
-        for (int i = 1; i < _segmentsPerChunk; i++)
-        {
-            ArraySegment<byte> chunk = new
-                ArraySegment<byte>(bytes, i * _segmentSize, _segmentSize);
-            _buffers.Push(chunk);
-        }
-    }
-
-    /// <summary>
-    /// Checks out a buffer from the manager.
-    /// </summary>
-    /// <remarks>
-    /// It is the client's responsibility to return the buffer to the manger by
-    /// calling <see cref="CheckIn" /> on the buffer.
-    /// </remarks>
-    /// <returns>A <see cref="ArraySegment{Byte}" /> that can be used as a buffer.</returns>
-    public ArraySegment<byte> Checkout()
-    {
-        ArraySegment<byte> seg = default(ArraySegment<byte>);
-        if(!_buffers.TryPop(out seg))
-        {
-            // Allow the caller to continue as soon as possible.
-            var chunk = new byte[_segmentsPerChunk * _segmentSize];
-            var action = new Action<byte[]>(CompleteChunk);
-            action.BeginInvoke(chunk, x => action.EndInvoke(x));
-            // We have the buffer at the start of the chunk.
-            seg = new ArraySegment<byte>(chunk, 0, _segmentsPerChunk);
+            get
+            {
+                return _segmentSize;
+            }
         }
 
-        return seg;
-    }
-
-    /// <summary>
-    /// Returns a buffer to the control of the manager.
-    /// </summary>
-    /// <param name="buffer">The <see cref="ArraySegment{Byte}"></see> to return to the cache.</param>
-    public void CheckIn(ArraySegment<byte> buffer)
-    {
-        if (buffer.Array == null)
-            throw new ArgumentNullException("buffer.Array");
-        _buffers.Push(buffer);
-    }
-
-    /// <summary>
-    /// Constructs a new <see cref="BufferPool" /> object
-    /// </summary>
-    /// <param name="segmentChunks">The number of chunks to create per segment</param>
-    /// <param name="chunkSize">The size of a chunk in bytes</param>
-    public BufferPool(int segmentChunks, int chunkSize) :
-        this(segmentChunks, chunkSize, 1)
-    {
-
-    }
-
-    /// <summary>
-    /// Constructs a new <see cref="BufferPool"></see> object
-    /// </summary>
-    /// <param name="segmentsPerChunk">The number of segments per chunk.</param>
-    /// <param name="segmentSize">The size of each segment.</param>
-    /// <param name="initialChunks">The initial number of chunks to create.</param>
-    public BufferPool(int segmentsPerChunk, int segmentSize, int initialChunks)
-    {
-        _segmentsPerChunk = segmentsPerChunk;
-        _segmentSize = segmentSize;
-        _buffers = new ConcurrentStack<ArraySegment<byte>>();
-        for (int i = 0; i < initialChunks; i++)
+        /// <summary>
+        /// Gets the amount of segments per chunk.
+        /// </summary>
+        public int SegmentsPerChunk
         {
-            CreateNewChunk();
+            get
+            {
+                return _segmentsPerChunk;
+            }
+        }
+
+        /// <summary>
+        /// Creates a new chunk, makes buffers available.
+        /// </summary>
+        private void CreateNewChunk()
+        {
+            var val = _segmentsPerChunk * _segmentSize;
+
+            byte[] bytes = new byte[val];
+            for (int i = 0; i < _segmentsPerChunk; i++)
+            {
+                ArraySegment<byte> chunk = new
+                    ArraySegment<byte>(bytes, i * _segmentSize, _segmentSize);
+                _buffers.Push(chunk);
+            }
+        }
+
+        /// <summary>
+        /// Creates a new chunk, makes buffers available.
+        /// </summary>
+        private void CompleteChunk(byte[] bytes)
+        {
+            for (int i = 1; i < _segmentsPerChunk; i++)
+            {
+                ArraySegment<byte> chunk = new
+                    ArraySegment<byte>(bytes, i * _segmentSize, _segmentSize);
+                _buffers.Push(chunk);
+            }
+        }
+
+        /// <summary>
+        /// Checks out a buffer from the manager.
+        /// </summary>
+        /// <remarks>
+        /// It is the client's responsibility to return the buffer to the manger by
+        /// calling <see cref="CheckIn" /> on the buffer.
+        /// </remarks>
+        /// <returns>A <see cref="ArraySegment{Byte}" /> that can be used as a buffer.</returns>
+        public ArraySegment<byte> Checkout()
+        {
+            ArraySegment<byte> seg = default(ArraySegment<byte>);
+            if(!_buffers.TryPop(out seg))
+            {
+                // Allow the caller to continue as soon as possible.
+                var chunk = new byte[_segmentsPerChunk * _segmentSize];
+                var action = new Action<byte[]>(CompleteChunk);
+                action.BeginInvoke(chunk, x => action.EndInvoke(x));
+                // We have the buffer at the start of the chunk.
+                seg = new ArraySegment<byte>(chunk, 0, _segmentsPerChunk);
+            }
+
+            return seg;
+        }
+
+        /// <summary>
+        /// Returns a buffer to the control of the manager.
+        /// </summary>
+        /// <param name="buffer">The <see cref="ArraySegment{Byte}"></see> to return to the cache.</param>
+        public void CheckIn(ArraySegment<byte> buffer)
+        {
+            if (buffer.Array == null)
+                throw new ArgumentNullException("buffer.Array");
+            _buffers.Push(buffer);
+        }
+
+        /// <summary>
+        /// Constructs a new <see cref="BufferPool" /> object
+        /// </summary>
+        /// <param name="segmentChunks">The number of chunks to create per segment</param>
+        /// <param name="chunkSize">The size of a chunk in bytes</param>
+        public BufferPool(int segmentChunks, int chunkSize) :
+            this(segmentChunks, chunkSize, 1)
+        {
+
+        }
+
+        /// <summary>
+        /// Constructs a new <see cref="BufferPool"></see> object
+        /// </summary>
+        /// <param name="segmentsPerChunk">The number of segments per chunk.</param>
+        /// <param name="segmentSize">The size of each segment.</param>
+        /// <param name="initialChunks">The initial number of chunks to create.</param>
+        public BufferPool(int segmentsPerChunk, int segmentSize, int initialChunks)
+        {
+            _segmentsPerChunk = segmentsPerChunk;
+            _segmentSize = segmentSize;
+            _buffers = new ConcurrentStack<ArraySegment<byte>>();
+            for (int i = 0; i < initialChunks; i++)
+            {
+                CreateNewChunk();
+            }
         }
     }
-}
-```
 
 Note that you can also use [BufferManager][6] (which doesn't support `ArraySegment`).
 
@@ -251,32 +248,30 @@ Make sure that your server can PUSH parse. One form of DOS is to send a really b
 to attempt to store this packet before parsing it - potentially overallocating and crashing the process. Don't do this, instead parse the bytes as you get them.
 For instance instead of using a `StreamReader` look at the following:
 
-```c#
-private Encoding _encoding;
-private Decoder _decoder;
-private char[] _charData = new char[4];
+    private Encoding _encoding;
+    private Decoder _decoder;
+    private char[] _charData = new char[4];
 
-public PushTextReader(Encoding encoding)
-{
-    _encoding = encoding;
-    _decoder = _encoding.GetDecoder();
-}
+    public PushTextReader(Encoding encoding)
+    {
+        _encoding = encoding;
+        _decoder = _encoding.GetDecoder();
+    }
 
-// A single connection requires its own decoder
-// and charData. That connection should never
-// call this method from multiple threads
-// simultaneously.
-// If you are using the ReadAsyncLoop you
-// don't need to worry about it.
-public void ReceiveData(ArraySegment<byte> data)
-{
-    // The two false parameters cause the decoder
-    // to accept 'partial' characters.
-    var charCount = _decoder.GetCharCount(data.Array, data.Offset, data.Count, false);
-    charCount = _decoder.GetChars(data.Array, data.Offset, data.Count, _charData, 0, false);
-    OnCharacterData(new ArraySegment<char>(_charData, 0, charCount));
-}
-```
+    // A single connection requires its own decoder
+    // and charData. That connection should never
+    // call this method from multiple threads
+    // simultaneously.
+    // If you are using the ReadAsyncLoop you
+    // don't need to worry about it.
+    public void ReceiveData(ArraySegment<byte> data)
+    {
+        // The two false parameters cause the decoder
+        // to accept 'partial' characters.
+        var charCount = _decoder.GetCharCount(data.Array, data.Offset, data.Count, false);
+        charCount = _decoder.GetChars(data.Array, data.Offset, data.Count, _charData, 0, false);
+        OnCharacterData(new ArraySegment<char>(_charData, 0, charCount));
+    }
 
 If you need to build up the packet before parsing it (say it's XML and you don't want to write/test your own PUSH parser) rather write it to a temporary file.
 
