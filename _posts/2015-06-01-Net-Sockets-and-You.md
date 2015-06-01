@@ -79,6 +79,73 @@ Don't use the built-in `Receive` and `Send` methods, construct a `NetworkStream`
 uses one `DeflateStream` (in `CompressionMode.Compress`) to write and another (in `CompressionMode.Decompress`) to read. Also note that in prior to .Net 4.0
 `DeflateStream` should only be used to compress English/markup as it has a hard-coded dictionary.
 
+## Async/Await
+
+Contradictory to the advice above, `async` and `await` allow you to use sockets in Berkley style without jeapordizing the scalability of your server. The only
+caveat is that `Socket` does not provide native TPL methods and therefore `Task.Factory.FromAsync` needs to be used.
+
+    class Server
+    {
+        // ...
+        Socket _socket;
+        bool _listening;
+
+        private async void Listen()
+        {
+            // ...
+            while (_listening)
+            {
+                try
+                {
+                    var client = await Task.Factory.FromAsync<Socket>(_socket.BeginAccept, _socket.EndAccept, null);
+                    AcceptClient(client);
+                }
+                catch (Exception e)
+                {
+                    // Log etc.
+                }
+            }
+        }
+
+        private async void AcceptClient(Socket client)
+        {
+            var buffer = BufferPool.Instance.Checkout();
+            try
+            {
+                using (var ns = new NetworkStream(client, true))
+                {
+                    while (_listening && client.Connected)
+                    {
+                        try
+                        {
+                            var count = await ns.ReadAsync(buffer.Array, buffer.Offset, buffer.Count);
+                            if (count == 0)
+                            {
+                                // Client disconnected normally.
+                                break;
+                            }
+                            else
+                            {
+                                OnDataRead(new ArraySegment<byte>(buffer.Array, buffer.Offset, count));
+                            }
+                        }
+                        catch (Exception e)
+                        {
+
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                BufferPool.Instance.CheckIn(buffer);
+            }
+        }
+    }
+
+If possible, I personally use `async`/`await` in preference to the async pattern as it typically improves maintainability. The performance difference should be
+negligible.
+
 ## The Evils of Pinning
 
 The Microsoft CLR uses P/Invoke to provision sockets. A side-effect of P/Invoke is that any reference types (and a byte array a.k.a buffer is a reference type)
